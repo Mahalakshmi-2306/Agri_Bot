@@ -1,0 +1,148 @@
+<!-- index.html (inside templates/) -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>AgriBot - Smart Farming Assistant</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+</head>
+<body>
+  <div class="container">
+    <header>
+      <img src="{{ url_for('static', filename='img/favicon.ico') }}" alt="AgriBot Logo" class="logo">
+      <h1>AgriBot</h1>
+      <p>Your AI-powered Agriculture Assistant</p>
+    </header>
+
+    <div class="chat-container">
+      <div class="chat-box" id="chat-box"></div>
+
+      <form id="chat-form">
+        <div class="input-group">
+          <input type="text" id="text-input" name="text" placeholder="Type your query..." autocomplete="off">
+          <button type="button" id="mic-btn"><i class="fas fa-microphone"></i></button>
+          <button type="submit"><i class="fas fa-paper-plane"></i></button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <footer>
+    <p>&copy; 2025 AgriBot | Built with ❤️ for farmers</p>
+  </footer>
+
+  <script>
+    const form = document.getElementById('chat-form');
+    const textInput = document.getElementById('text-input');
+    const chatBox = document.getElementById('chat-box');
+    const micBtn = document.getElementById('mic-btn');
+    let mediaRecorder;
+    let chunks = [];
+
+    function formatBotText(text) {
+      // Convert **bold** to <strong>
+      text = text.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+
+      // Convert numbered lines into an HTML list
+      const lines = text.split('\n');
+      let formatted = '';
+      let inList = false;
+
+      for (let line of lines) {
+        const trimmed = line.trim();
+        if (/^\d+\.\s/.test(trimmed)) {
+          if (!inList) {
+            formatted += '<ol>';
+            inList = true;
+          }
+          formatted += `<li>${trimmed.replace(/^\d+\.\s/, '')}</li>`;
+        } else {
+          if (inList) {
+            formatted += '</ol>';
+            inList = false;
+          }
+          if (trimmed) formatted += `<p>${trimmed}</p>`;
+        }
+      }
+
+      if (inList) formatted += '</ol>';
+      return formatted;
+    }
+
+    function addMessage(sender, message, audioSrc = null) {
+      const msgDiv = document.createElement('div');
+      msgDiv.classList.add('msg', sender);
+
+      if (sender === 'bot') {
+        msgDiv.innerHTML = formatBotText(message);
+      } else {
+        msgDiv.innerHTML = `<p>${message}</p>`;
+      }
+
+      if (audioSrc) {
+        const audio = document.createElement('audio');
+        audio.controls = true;
+        audio.src = audioSrc;
+        msgDiv.appendChild(audio);
+      }
+      chatBox.appendChild(msgDiv);
+      chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const text = textInput.value.trim();
+      if (!text) return;
+
+      addMessage('user', text);
+      const formData = new FormData();
+      formData.append('text', text);
+      textInput.value = '';
+
+      const res = await fetch('/chat', {
+        method: 'POST',
+        body: formData
+      });
+
+      const data = await res.json();
+      addMessage('bot', data.response, data.voice);
+    });
+
+    micBtn.addEventListener('click', async () => {
+      if (!mediaRecorder || mediaRecorder.state === 'inactive') {
+        chunks = [];
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        mediaRecorder = new MediaRecorder(stream);
+
+        mediaRecorder.ondataavailable = e => chunks.push(e.data);
+
+        mediaRecorder.onstop = async () => {
+          const blob = new Blob(chunks, { type: 'audio/webm' });
+          const formData = new FormData();
+          formData.append('audio', blob, 'recording.webm');
+
+          addMessage('user', '🎤 Processing your voice...');
+
+          const res = await fetch('/chat', {
+            method: 'POST',
+            body: formData
+          });
+
+          const data = await res.json();
+          if (data.text) addMessage('user', data.text);
+          if (data.response) addMessage('bot', data.response, data.voice);
+        };
+
+        mediaRecorder.start();
+        micBtn.innerHTML = '<i class="fas fa-stop"></i>';
+      } else {
+        mediaRecorder.stop();
+        micBtn.innerHTML = '<i class="fas fa-microphone"></i>';
+      }
+    });
+  </script>
+  <a href="{{ url_for('logout') }}" class="logout-btn">Logout</a>
+
+</body>
+</html>
