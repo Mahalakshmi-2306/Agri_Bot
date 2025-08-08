@@ -37,10 +37,10 @@ model = genai.GenerativeModel('models/gemini-1.5-flash')
 # ---------- Database Connection ----------
 def get_db_connection():
     return mysql.connector.connect(
-        host='localhost',
-        user='root',
-        password='vijay@19_98',
-        database='agribot'
+        host=os.getenv('DB_HOST'),
+        user=os.getenv('DB_USER'),
+        password=os.getenv('DB_PASSWORD'),
+        database=os.getenv('DB_NAME')
     )
 
 # ---------- Helpers ----------
@@ -145,7 +145,7 @@ def get_gemini_reply(question, weather=""):
     prompt = f"User question: {question}\nCurrent weather: {weather}\nAnswer in English:"
     response = model.generate_content(prompt)
     return response.text.strip()
-
+"""
 # Translate Gemini English reply to target language
 def translate_to_language(text, target_lang_code):
     if target_lang_code == 'en':
@@ -153,6 +153,43 @@ def translate_to_language(text, target_lang_code):
     prompt = f"Translate this English text to {target_lang_code}:\n\"{text}\""
     response = model.generate_content(prompt)
     return response.text.strip()
+"""
+def translate_to_language(text, target_lang_code, source_lang_code='en'):
+    LANG_CODE_MAP = {
+        "en": "English",
+        "ml": "Malayalam",
+        "hi": "Hindi",
+        "ta": "Tamil",
+        "te": "Telugu",
+        "kn": "Kannada",
+        "gu": "Gujarati",
+        "mr": "Marathi",
+        "bn": "Bengali",
+        "pa": "Punjabi",
+    }
+
+    target_lang = LANG_CODE_MAP.get(target_lang_code, target_lang_code)
+    source_lang = LANG_CODE_MAP.get(source_lang_code, source_lang_code)
+
+    if source_lang_code == target_lang_code:
+        return text  # No need to translate
+
+    # Force strict translation
+    prompt = (
+        f"Translate the following text from {source_lang} to {target_lang}. "
+        f"Do NOT include the original text or any other language. "
+        f"Output should be in pure {target_lang}, natural and fluent.\n\n"
+        f"{text}"
+    )
+
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        print("Translation error:", e)
+        return text
+
+
 
 def maybe_update_summary(user_id):
     conn = get_db_connection()
@@ -254,8 +291,9 @@ def chat():
     audio = request.files.get('audio')
     text = request.form.get('text')
 
-    if audio and allowed_file(audio.filename) and audio.filename != '':
-        try:
+    try:
+        # 1️⃣ Get user text + detected language
+        if audio and allowed_file(audio.filename) and audio.filename != '':
             filename = secure_filename(audio.filename)
             filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
             audio.save(filepath)
@@ -264,57 +302,52 @@ def chat():
             config = aai.TranscriptionConfig(language_detection=True)
             transcriber = aai.Transcriber(config=config)
             transcript = transcriber.transcribe(filepath)
+
             user_text = transcript.text
             detected_lang = transcript.json_response.get("language_code", "en")
-            user_text_en = translate_to_language(user_text, 'en')
-            save_chat(user_id, 'User', user_text_en)
 
-            weather = fetch_weather(session.get('region', ''))
-            english_reply = get_gemini_reply(user_text, weather)
-            translated_reply = translate_to_language(english_reply, detected_lang)
+        elif text:
+            user_text = text
+            try:
+                detected_lang = detect(user_text)
+            except:
+                detected_lang = 'en'
+        else:
+            return jsonify({'text': "No input provided."})
 
-            save_chat(user_id, 'AgriBot', translated_reply)
-            maybe_update_summary(user_id)
-
-            voice_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
-            text_to_audio(translated_reply, voice_id, detected_lang)
-
-            return jsonify({
-                'text': user_text,
-                'language': detected_lang,
-                'response': translated_reply,
-                'voice': url_for('static', filename='audio/' + voice_id + '.mp3')
-            })
-        except Exception as e:
-            return jsonify({'text': 'Failed audio.', 'response': str(e), 'voice': None})
-
-    elif text:
-        try:
-            detected_lang = detect(text)
-        except:
-            detected_lang = 'en'
-        user_text_en = translate_to_language(text, 'en')
+        # 2️⃣ Translate user input to English for Gemini
+        user_text_en = translate_to_language(user_text, 'en', source_lang_code=detected_lang)
         save_chat(user_id, 'User', user_text_en)
 
+        # 3️⃣ Get weather data
         weather = fetch_weather(session.get('region', ''))
-        english_reply = get_answer_gemini(text, weather)
-        translated_reply = translate_to_language(english_reply, detected_lang)
 
-        save_chat(user_id, 'AgriBot', english_reply)
+        # 4️⃣ Get Gemini's reply in English
+        english_reply = get_answer_gemini(user_text_en, weather)
+
+        # 5️⃣ Translate reply back to original language
+        translated_reply = translate_to_language(english_reply, detected_lang, source_lang_code='en')
+
+        # 6️⃣ Save bot reply in original language
+        save_chat(user_id, 'AgriBot', translated_reply)
         maybe_update_summary(user_id)
 
+        # 7️⃣ Generate voice output
         voice_id = ''.join(random.choices(string.ascii_uppercase + string.digits, k=8))
         text_to_audio(translated_reply, voice_id, detected_lang)
 
-
+        # 8️⃣ Return consistent JSON
         return jsonify({
-            'text': text,
+            'text': user_text,
             'language': detected_lang,
             'response': translated_reply,
-            'voice': url_for('static', filename='audio/' + voice_id + '.mp3')
+            'voice': url_for('static', filename=f'audio/{voice_id}.mp3')
         })
 
-    return jsonify({'text': '', 'response': 'Invalid input.', 'voice': None})
+    except Exception as e:
+        return jsonify({'text': 'Error processing request.', 'response': str(e), 'voice': None})
+
+
 
 
 @app.route('/user/<int:user_id>')
